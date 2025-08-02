@@ -11,7 +11,6 @@ from textblob import TextBlob
 from collections import Counter, defaultdict
 from cachetools import TTLCache
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-from langdetect import detect
 from deep_translator import GoogleTranslator
 import nltk
 
