@@ -23,13 +23,13 @@ from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 
 # --- FastAPI App ---
-app = FastAPI(title="EdgeFinder API", version="7.0")
+app = FastAPI(title="EdgeFinder API", version="7.1")
 
 # --- Reddit API Setup ---
 reddit = praw.Reddit(
     client_id=os.getenv("REDDIT_CLIENT_ID"),
     client_secret=os.getenv("REDDIT_CLIENT_SECRET"),
-    user_agent="EdgeFinderGPT/7.0"
+    user_agent="EdgeFinderGPT/7.1"
 )
 
 # --- Google Trends Setup ---
@@ -78,23 +78,26 @@ def extract_keywords(posts: List[str]) -> List[str]:
 def keyword_cooccurrence(posts: List[str]) -> Dict[str, List[str]]:
     words = [clean_text(w) for w in " ".join(posts).split() if w.isalpha()]
     co_map = defaultdict(set)
+    stop_set = set(stopwords.words('english'))
     for i, word in enumerate(words):
-        if word not in stopwords.words('english'):
+        if word not in stop_set:
             for neighbor in words[max(0, i-2): i+3]:
-                if neighbor != word and neighbor not in stopwords.words('english'):
+                if neighbor != word and neighbor not in stop_set:
                     co_map[word].add(neighbor)
-    return {k: list(v) for k, v in co_map.items()}
+    return {k: sorted(v) for k, v in co_map.items()}
 
 def fetch_trend_score(topic: str) -> Dict:
     if topic in trend_cache:
         return trend_cache[topic]
+
     pytrends.build_payload([topic], cat=0, timeframe='now 7-d')
     data = pytrends.interest_over_time()
     related = pytrends.related_queries().get(topic, {}).get("top", pd.DataFrame())
+
     result = {
         "avg": int(data[topic].mean()) if not data.empty else 0,
         "trend_direction": "rising" if not data.empty and data[topic].iloc[-1] > data[topic].iloc[0] else "falling",
-        "history": data[topic].tail(7).tolist() if not data.empty else [],
+        "history": data[topic].tail(7).astype(int).tolist() if not data.empty else [],
         "related_terms": related["query"].head(5).tolist() if not related.empty else []
     }
     trend_cache[topic] = result
@@ -103,12 +106,13 @@ def fetch_trend_score(topic: str) -> Dict:
 async def fetch_reddit_posts(topic: str, trend_data: Dict) -> List[Dict]:
     if topic in reddit_cache:
         return reddit_cache[topic]
+
     posts, seen_urls = [], set()
     subreddit = reddit.subreddit("all")
 
-    for submission in subreddit.search(topic, sort="hot", limit=12):
+    async def process_submission(submission):
         if submission.url in seen_urls:
-            continue
+            return None
         seen_urls.add(submission.url)
 
         comments = []
@@ -125,18 +129,21 @@ async def fetch_reddit_posts(topic: str, trend_data: Dict) -> List[Dict]:
         engagement_ratio = len(comments) / max(submission.score, 1)
         score = calculate_opportunity_score(submission.score, trend_data["avg"], avg_sentiment, engagement_ratio)
 
-        posts.append({
+        return {
             "topic": topic,
             "title": translate_if_needed(submission.title),
             "url": f"https://reddit.com{submission.permalink}",
-            "reddit_score": submission.score,
+            "reddit_score": int(submission.score),
             "comment_engagement": round(engagement_ratio, 2),
             "google_trend_score": trend_data["avg"],
             "trend_direction": trend_data["trend_direction"],
             "sentiment_score": round(avg_sentiment, 3),
             "opportunity_score": score,
             "proof_comments": comments
-        })
+        }
+
+    tasks = [process_submission(sub) for sub in subreddit.search(topic, sort="hot", limit=12)]
+    posts = [p for p in await asyncio.gather(*tasks) if p]
     reddit_cache[topic] = posts
     return posts
 
@@ -161,8 +168,7 @@ async def radar_sweep(domain: str, auth: bool = Depends(verify_key)):
 @app.get("/multi-scan")
 async def multi_scan(domains: str, auth: bool = Depends(verify_key)):
     topics = [d.strip() for d in domains.split(",")]
-    tasks = [fetch_reddit_posts(t, fetch_trend_score(t)) for t in topics]
-    results = await asyncio.gather(*tasks)
+    results = await asyncio.gather(*[fetch_reddit_posts(t, fetch_trend_score(t)) for t in topics])
     all_posts = [p for topic_posts in results for p in topic_posts]
     all_posts.sort(key=lambda x: x["opportunity_score"], reverse=True)
     return {"scanned_topics": topics, "ranked_opportunities": all_posts[:12], "timestamp": datetime.utcnow().isoformat()}
@@ -173,7 +179,7 @@ def health():
         "status": "OK",
         "reddit_read_only": reddit.read_only,
         "cache_size": {"trends": len(trend_cache), "reddit": len(reddit_cache)},
-        "api_version": "7.0",
+        "api_version": "7.1",
         "server_time": datetime.utcnow().isoformat()
     }
 
@@ -182,5 +188,5 @@ def root():
     return {
         "status": "EdgeFinder API is live!",
         "endpoints": ["/radar-sweep", "/multi-scan", "/health"],
-        "version": "7.0"
+        "version": "7.1"
     }
