@@ -17,9 +17,13 @@ import nltk
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.application import MIMEApplication
 from fpdf import FPDF
 import json
 import aiofiles
+import time
+import requests
+from fastapi.staticfiles import StaticFiles
 
 # --- Download NLTK Resources ---
 nltk.download('stopwords')
@@ -29,13 +33,18 @@ from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 
 # --- FastAPI App ---
-app = FastAPI(title="EdgeFinder API", version="8.0")
+app = FastAPI(title="EdgeFinder API", version="8.5")
+
+# Serve static downloads folder
+if not os.path.exists("downloads"):
+    os.makedirs("downloads")
+app.mount("/downloads", StaticFiles(directory="downloads"), name="downloads")
 
 # --- Reddit API Setup ---
 reddit = praw.Reddit(
     client_id=os.getenv("REDDIT_CLIENT_ID"),
     client_secret=os.getenv("REDDIT_CLIENT_SECRET"),
-    user_agent="EdgeFinderGPT/8.0"
+    user_agent="EdgeFinderGPT/8.5"
 )
 
 # --- Google Trends Setup ---
@@ -106,6 +115,30 @@ def fetch_trend_score(topic: str) -> Dict:
     trend_cache[topic] = result
     return result
 
+# --- Pushshift Reddit Fallback ---
+def fetch_pushshift_posts(topic: str) -> List[Dict]:
+    url = f"https://api.pushshift.io/reddit/search/submission/?q={topic}&limit=10"
+    try:
+        data = requests.get(url).json()
+        return [
+            {
+                "topic": topic,
+                "title": p.get("title", ""),
+                "url": p.get("full_link", ""),
+                "reddit_score": p.get("score", 0),
+                "comment_engagement": 0,
+                "google_trend_score": 0,
+                "trend_direction": "unknown",
+                "sentiment_score": 0,
+                "opportunity_score": p.get("score", 0),
+                "proof_comments": []
+            }
+            for p in data.get("data", [])
+        ]
+    except:
+        return []
+
+# --- Reddit Fetch ---
 async def fetch_reddit_posts(topic: str, trend_data: Dict) -> List[Dict]:
     if topic in reddit_cache:
         return reddit_cache[topic]
@@ -114,6 +147,7 @@ async def fetch_reddit_posts(topic: str, trend_data: Dict) -> List[Dict]:
     subreddit = reddit.subreddit("all")
 
     async def process_submission(submission):
+        time.sleep(2)  # Prevent Reddit IP bans
         if submission.url in seen_urls:
             return None
         seen_urls.add(submission.url)
@@ -145,12 +179,16 @@ async def fetch_reddit_posts(topic: str, trend_data: Dict) -> List[Dict]:
             "proof_comments": comments
         }
 
-    tasks = [process_submission(sub) for sub in subreddit.search(topic, sort="hot", limit=12)]
-    posts = [p for p in await asyncio.gather(*tasks) if p]
+    try:
+        tasks = [process_submission(sub) for sub in subreddit.search(topic, sort="hot", limit=12)]
+        posts = [p for p in await asyncio.gather(*tasks) if p]
+    except:
+        posts = fetch_pushshift_posts(topic)
+
     reddit_cache[topic] = posts
     return posts
 
-# --- Core Endpoints ---
+# --- Endpoints ---
 @app.get("/radar-sweep")
 async def radar_sweep(domain: str, auth: bool = Depends(verify_key)):
     trend_data = fetch_trend_score(domain)
@@ -203,10 +241,10 @@ def workflow_export(request: WorkflowExportRequest):
         "platform": request.type,
         "timestamp": datetime.utcnow().isoformat()
     }
-    filename = f"workflow_{request.type}_{int(datetime.utcnow().timestamp())}.json"
+    filename = f"downloads/workflow_{request.type}_{int(datetime.utcnow().timestamp())}.json"
     with open(filename, "w") as f:
         json.dump(workflow_json, f)
-    return {"status": "success", "export_link": f"/downloads/{filename}"}
+    return {"status": "success", "export_link": f"/downloads/{os.path.basename(filename)}"}
 
 # --- Radar Alerts ---
 class RadarAlertRequest(BaseModel):
@@ -217,18 +255,46 @@ class RadarAlertRequest(BaseModel):
 def radar_alerts(request: RadarAlertRequest):
     return {"status": "active", "next_sweep": "Scheduled", "email": request.email, "interval": request.interval}
 
-# --- PDF Digest ---
+# --- PDF Digest with Email ---
 @app.post("/pdf-digest")
 async def pdf_digest(domains: List[str], email: str):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", size=12)
     pdf.cell(200, 10, txt="Radar Sweep PDF Digest", ln=True, align="C")
+
     for domain in domains:
         pdf.cell(200, 10, txt=f"- {domain}", ln=True)
-    filename = "radar_digest.pdf"
+
+    filename = f"downloads/radar_digest_{int(datetime.utcnow().timestamp())}.pdf"
     pdf.output(filename)
-    return {"status": "success", "pdf_link": f"/downloads/{filename}", "email_sent_to": email}
+
+    # Send email with PDF attachment
+    smtp_server = os.getenv("SMTP_SERVER")
+    smtp_port = int(os.getenv("SMTP_PORT", 587))
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_pass = os.getenv("SMTP_PASS")
+
+    if smtp_server and smtp_user and smtp_pass:
+        msg = MIMEMultipart()
+        msg["From"] = smtp_user
+        msg["To"] = email
+        msg["Subject"] = "Your Radar Sweep PDF Digest"
+
+        body = MIMEText("Attached is your radar sweep PDF digest.", "plain")
+        msg.attach(body)
+
+        with open(filename, "rb") as f:
+            part = MIMEApplication(f.read(), Name=os.path.basename(filename))
+        part["Content-Disposition"] = f'attachment; filename="{os.path.basename(filename)}"'
+        msg.attach(part)
+
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_pass)
+            server.sendmail(smtp_user, email, msg.as_string())
+
+    return {"status": "success", "pdf_link": f"/downloads/{os.path.basename(filename)}", "email_sent_to": email}
 
 @app.get("/health")
 def health():
@@ -236,6 +302,6 @@ def health():
         "status": "OK",
         "reddit_read_only": reddit.read_only,
         "cache_size": {"trends": len(trend_cache), "reddit": len(reddit_cache)},
-        "api_version": "8.0",
+        "api_version": "8.5",
         "server_time": datetime.utcnow().isoformat()
     }
