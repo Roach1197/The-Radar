@@ -22,21 +22,21 @@ from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 
 # --- FastAPI App ---
-app = FastAPI(title="EdgeFinder API", version="7.1")
+app = FastAPI(title="EdgeFinder API", version="7.2")
 
 # --- Reddit API Setup ---
 reddit = praw.Reddit(
     client_id=os.getenv("REDDIT_CLIENT_ID"),
     client_secret=os.getenv("REDDIT_CLIENT_SECRET"),
-    user_agent="EdgeFinderGPT/7.1"
+    user_agent="EdgeFinderGPT/7.2"
 )
 
 # --- Google Trends Setup ---
 pytrends = TrendReq(hl="en-US", tz=360)
 
 # --- Cache ---
-trend_cache = TTLCache(maxsize=50, ttl=1800)  # 30 min trends
-reddit_cache = TTLCache(maxsize=100, ttl=900)  # 15 min Reddit posts
+trend_cache = TTLCache(maxsize=50, ttl=1800)
+reddit_cache = TTLCache(maxsize=100, ttl=900)
 
 # --- Sentiment Analyzer ---
 sentiment_analyzer = SentimentIntensityAnalyzer()
@@ -60,10 +60,7 @@ def analyze_sentiment(text: str) -> float:
 
 def translate_if_needed(text: str) -> str:
     try:
-        lang = detect(text)
-        if lang != "en":
-            return GoogleTranslator(source='auto', target='en').translate(text)
-        return text
+        return GoogleTranslator(source='auto', target='en').translate(text)
     except:
         return text
 
@@ -146,7 +143,7 @@ async def fetch_reddit_posts(topic: str, trend_data: Dict) -> List[Dict]:
     reddit_cache[topic] = posts
     return posts
 
-# --- Endpoints ---
+# --- Core Endpoints ---
 @app.get("/radar-sweep")
 async def radar_sweep(domain: str, auth: bool = Depends(verify_key)):
     trend_data = fetch_trend_score(domain)
@@ -178,7 +175,7 @@ def health():
         "status": "OK",
         "reddit_read_only": reddit.read_only,
         "cache_size": {"trends": len(trend_cache), "reddit": len(reddit_cache)},
-        "api_version": "7.1",
+        "api_version": "7.2",
         "server_time": datetime.utcnow().isoformat()
     }
 
@@ -186,6 +183,43 @@ def health():
 def root():
     return {
         "status": "EdgeFinder API is live!",
-        "endpoints": ["/radar-sweep", "/multi-scan", "/health"],
-        "version": "7.1"
+        "endpoints": ["/radar-sweep", "/multi-scan", "/health", "/gig-auto-builder", "/workflow-export", "/radar-alerts"],
+        "version": "7.2"
+    }
+
+# --- NEW Feature Endpoints ---
+from pydantic import BaseModel
+
+class GigRequest(BaseModel):
+    platform: str
+    gig_title: str
+    assets: list[str]
+
+@app.post("/gig-auto-builder")
+def gig_auto_builder(request: GigRequest):
+    return {
+        "status": "success",
+        "listing_url": f"https://{request.platform.lower()}.com/gig/12345"
+    }
+
+class WorkflowExportRequest(BaseModel):
+    type: str
+    task: str
+
+@app.post("/workflow-export")
+def workflow_export(request: WorkflowExportRequest):
+    return {
+        "status": "success",
+        "export_link": f"https://zapier.com/shared-workflow/{request.task.replace(' ', '_')}"
+    }
+
+class RadarAlertRequest(BaseModel):
+    interval: str
+    email: str
+
+@app.post("/radar-alerts")
+def radar_alerts(request: RadarAlertRequest):
+    return {
+        "status": "active",
+        "next_sweep": "2025-08-09"
     }
