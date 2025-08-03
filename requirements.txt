@@ -11,4 +11,4 @@ python-dotenv==1.0.1
 nltk==3.8.1
 vaderSentiment==3.3.2
 deep-translator==1.11.4
-fpdf==1.7.2
+fpdf2==2.7.8
