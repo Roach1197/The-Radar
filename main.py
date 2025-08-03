@@ -4,6 +4,7 @@ import praw
 import asyncio
 import pandas as pd
 from fastapi import FastAPI, Query, Depends, HTTPException
+from pydantic import BaseModel
 from pytrends.request import TrendReq
 from datetime import datetime
 from typing import List, Dict
@@ -22,13 +23,13 @@ from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 
 # --- FastAPI App ---
-app = FastAPI(title="EdgeFinder API", version="7.2")
+app = FastAPI(title="EdgeFinder API", version="7.3")
 
 # --- Reddit API Setup ---
 reddit = praw.Reddit(
     client_id=os.getenv("REDDIT_CLIENT_ID"),
     client_secret=os.getenv("REDDIT_CLIENT_SECRET"),
-    user_agent="EdgeFinderGPT/7.2"
+    user_agent="EdgeFinderGPT/7.3"
 )
 
 # --- Google Trends Setup ---
@@ -175,7 +176,7 @@ def health():
         "status": "OK",
         "reddit_read_only": reddit.read_only,
         "cache_size": {"trends": len(trend_cache), "reddit": len(reddit_cache)},
-        "api_version": "7.2",
+        "api_version": "7.3",
         "server_time": datetime.utcnow().isoformat()
     }
 
@@ -183,13 +184,11 @@ def health():
 def root():
     return {
         "status": "EdgeFinder API is live!",
-        "endpoints": ["/radar-sweep", "/multi-scan", "/health", "/gig-auto-builder", "/workflow-export", "/radar-alerts"],
-        "version": "7.2"
+        "endpoints": ["/radar-sweep", "/multi-scan", "/health", "/gig-auto-builder", "/workflow-export"],
+        "version": "7.3"
     }
 
 # --- NEW Feature Endpoints ---
-from pydantic import BaseModel
-
 class GigRequest(BaseModel):
     platform: str
     gig_title: str
@@ -197,9 +196,10 @@ class GigRequest(BaseModel):
 
 @app.post("/gig-auto-builder")
 def gig_auto_builder(request: GigRequest):
+    """Simulates auto-creation of a gig listing."""
     return {
         "status": "success",
-        "listing_url": f"https://{request.platform.lower()}.com/gig/12345"
+        "listing_url": f"https://{request.platform.lower()}.com/gig/{request.gig_title.replace(' ', '-').lower()}"
     }
 
 class WorkflowExportRequest(BaseModel):
@@ -208,18 +208,8 @@ class WorkflowExportRequest(BaseModel):
 
 @app.post("/workflow-export")
 def workflow_export(request: WorkflowExportRequest):
+    """Simulates export of automation workflow links."""
     return {
         "status": "success",
-        "export_link": f"https://zapier.com/shared-workflow/{request.task.replace(' ', '_')}"
-    }
-
-class RadarAlertRequest(BaseModel):
-    interval: str
-    email: str
-
-@app.post("/radar-alerts")
-def radar_alerts(request: RadarAlertRequest):
-    return {
-        "status": "active",
-        "next_sweep": "2025-08-09"
+        "export_link": f"https://automation.example.com/export/{request.type}/{request.task.replace(' ', '_')}"
     }
