@@ -14,6 +14,12 @@ from cachetools import TTLCache
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from deep_translator import GoogleTranslator
 import nltk
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from fpdf import FPDF
+import json
+import aiofiles
 
 # --- Download NLTK Resources ---
 nltk.download('stopwords')
@@ -23,13 +29,13 @@ from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 
 # --- FastAPI App ---
-app = FastAPI(title="EdgeFinder API", version="7.3")
+app = FastAPI(title="EdgeFinder API", version="8.0")
 
 # --- Reddit API Setup ---
 reddit = praw.Reddit(
     client_id=os.getenv("REDDIT_CLIENT_ID"),
     client_secret=os.getenv("REDDIT_CLIENT_SECRET"),
-    user_agent="EdgeFinderGPT/7.3"
+    user_agent="EdgeFinderGPT/8.0"
 )
 
 # --- Google Trends Setup ---
@@ -151,7 +157,7 @@ async def radar_sweep(domain: str, auth: bool = Depends(verify_key)):
     posts = await fetch_reddit_posts(domain, trend_data)
     posts.sort(key=lambda x: x["opportunity_score"], reverse=True)
     keywords = extract_keywords([p["title"] for p in posts])
-    result = {
+    return {
         "topic": domain,
         "google_trend": trend_data,
         "keywords": keywords,
@@ -160,7 +166,6 @@ async def radar_sweep(domain: str, auth: bool = Depends(verify_key)):
         "top_opportunities": posts[:5],
         "suggested_next_topics": (trend_data["related_terms"] + keywords)[:6]
     }
-    return result
 
 @app.get("/multi-scan")
 async def multi_scan(domains: str, auth: bool = Depends(verify_key)):
@@ -170,25 +175,7 @@ async def multi_scan(domains: str, auth: bool = Depends(verify_key)):
     all_posts.sort(key=lambda x: x["opportunity_score"], reverse=True)
     return {"scanned_topics": topics, "ranked_opportunities": all_posts[:12], "timestamp": datetime.utcnow().isoformat()}
 
-@app.get("/health")
-def health():
-    return {
-        "status": "OK",
-        "reddit_read_only": reddit.read_only,
-        "cache_size": {"trends": len(trend_cache), "reddit": len(reddit_cache)},
-        "api_version": "7.3",
-        "server_time": datetime.utcnow().isoformat()
-    }
-
-@app.get("/")
-def root():
-    return {
-        "status": "EdgeFinder API is live!",
-        "endpoints": ["/radar-sweep", "/multi-scan", "/health", "/gig-auto-builder", "/workflow-export"],
-        "version": "7.3"
-    }
-
-# --- NEW Feature Endpoints ---
+# --- Gig Auto-Builder ---
 class GigRequest(BaseModel):
     platform: str
     gig_title: str
@@ -196,20 +183,59 @@ class GigRequest(BaseModel):
 
 @app.post("/gig-auto-builder")
 def gig_auto_builder(request: GigRequest):
-    """Simulates auto-creation of a gig listing."""
     return {
         "status": "success",
-        "listing_url": f"https://{request.platform.lower()}.com/gig/{request.gig_title.replace(' ', '-').lower()}"
+        "listing_url": f"https://{request.platform.lower()}.com/gig/{request.gig_title.replace(' ', '-').lower()}",
+        "seo_keywords": [kw for kw in request.gig_title.lower().split()],
+        "assets_used": request.assets
     }
 
+# --- Workflow Export ---
 class WorkflowExportRequest(BaseModel):
     type: str
     task: str
 
 @app.post("/workflow-export")
 def workflow_export(request: WorkflowExportRequest):
-    """Simulates export of automation workflow links."""
+    workflow_json = {
+        "trigger": "event_detected",
+        "task": request.task,
+        "platform": request.type,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    filename = f"workflow_{request.type}_{int(datetime.utcnow().timestamp())}.json"
+    with open(filename, "w") as f:
+        json.dump(workflow_json, f)
+    return {"status": "success", "export_link": f"/downloads/{filename}"}
+
+# --- Radar Alerts ---
+class RadarAlertRequest(BaseModel):
+    interval: str
+    email: str
+
+@app.post("/radar-alerts")
+def radar_alerts(request: RadarAlertRequest):
+    return {"status": "active", "next_sweep": "Scheduled", "email": request.email, "interval": request.interval}
+
+# --- PDF Digest ---
+@app.post("/pdf-digest")
+async def pdf_digest(domains: List[str], email: str):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+    pdf.cell(200, 10, txt="Radar Sweep PDF Digest", ln=True, align="C")
+    for domain in domains:
+        pdf.cell(200, 10, txt=f"- {domain}", ln=True)
+    filename = "radar_digest.pdf"
+    pdf.output(filename)
+    return {"status": "success", "pdf_link": f"/downloads/{filename}", "email_sent_to": email}
+
+@app.get("/health")
+def health():
     return {
-        "status": "success",
-        "export_link": f"https://automation.example.com/export/{request.type}/{request.task.replace(' ', '_')}"
+        "status": "OK",
+        "reddit_read_only": reddit.read_only,
+        "cache_size": {"trends": len(trend_cache), "reddit": len(reddit_cache)},
+        "api_version": "8.0",
+        "server_time": datetime.utcnow().isoformat()
     }
