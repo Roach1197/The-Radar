@@ -12,3 +12,5 @@ nltk==3.8.1
 vaderSentiment==3.3.2
 deep-translator==1.11.4
 fpdf2==2.7.8
+aiofiles==23.2.1
+email-validator==2.1.0.post1
